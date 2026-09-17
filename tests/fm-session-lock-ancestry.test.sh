@@ -404,11 +404,51 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+test_agy_session_is_identified() {
+  local dir fakebin got
+  dir="$TMP_ROOT/agy-session"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  750:comm=) printf '%s\n' agy ;;
+  750:args=) printf '%s\n' 'agy' ;;
+  750:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-session-start.sh' ;;
+  *:ppid=) printf '%s\n' 750 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  printf '750\n' > "$dir/state/.lock"
+
+  got=$(lib_eval "$fakebin" 'fm_harness_ancestry_pid') \
+    || fail "the agy session was not found in the ancestry"
+  [ "$got" = 750 ] || fail "ancestry resolved '$got', expected the agy session pid 750"
+  lib_eval "$fakebin" 'fm_harness_pid_alive 750' \
+    || fail "a live agy session was not recognized as a harness"
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
+    || fail "the agy session holding the lock did not recognize itself as the owner"
+  pass "session-lock: an agy session is identified as an authorized lock owner"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_harness_at_namespace_pid1_is_examined
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
+test_agy_session_is_identified
 test_e2e_version_named_session_claims_the_home
 test_e2e_daemon_parented_session_claims_the_home
 test_e2e_daemon_parented_version_named_session_keeps_its_lock
+
