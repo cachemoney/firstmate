@@ -104,6 +104,7 @@ test_harness_resolution() {
 both absent -> own (backward-compat)^-^-^claude^claude
 crew set, secondmate absent -> crew (backward-compat)^codex^-^codex^codex
 crew set, secondmate set -> secondmate wins, crew untouched^codex^grok^grok^codex
+crew set, secondmate set to agy -> agy wins, crew untouched^codex^agy^agy^codex
 crew absent, secondmate set -> secondmate value, crew own^-^grok^grok^claude
 signed Pi wrapper remains a distinct secondmate value^codex^pi-signed^pi-signed^codex
 secondmate=default defers to crew^codex^default^codex^codex
@@ -165,6 +166,7 @@ bare harness only -> empty model/effort (backward-compat)^claude^claude^^
 harness + model -> model only^claude opus^claude^opus^
 harness + model + effort -> both^claude opus high^claude^opus^high
 signed Pi wrapper + model + effort preserves every token^pi-signed openai-codex/gpt-5.6-sol max^pi-signed^openai-codex/gpt-5.6-sol^max
+agy + model + effort -> both^agy gemini-3.8-flash-high high^agy^gemini-3.8-flash-high^high
 default harness token -> falls back to crew, empty model/effort^default^claude^^
 extra whitespace between tokens is tolerated^grok   grok-4    xhigh^grok^grok-4^xhigh
 leading/trailing blank lines and a comment are skipped^# a comment\n\nclaude opus low\n^claude^opus^low
@@ -635,6 +637,50 @@ test_spawn_cursor_secondmate_launches_with_its_primary_contract() {
   pass "Cursor is accepted for secondmates and launches with the contract its park needs"
 }
 
+test_spawn_agy_secondmate_launches_with_its_primary_contract() {
+  local w sm fakebin launchlog launch meta rc store
+  w="$TMP_ROOT/spawn-agy-secondmate"
+  sm="$w/sm"
+  launchlog="$w/launch.log"
+  mkdir -p "$w/home/config" "$w/home/state" "$w/home/data" "$w/home/projects"
+  printf 'agy\n' > "$w/home/config/secondmate-harness"
+  make_seeded_home "$sm" sm
+  fakebin=$(make_launch_capturing_tmux "$w/tmux")
+  cat > "$fakebin/agy" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = models ]; then
+  printf 'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/agy"
+  store="$w/home/user-home/.gemini/antigravity-cli/settings.json"
+  mkdir -p "$(dirname "$store")"
+  printf '%s\n' '{"trustedWorkspaces":[]}' > "$store"
+
+  : > "$launchlog"
+  rc=0
+  PATH="$fakebin:$BASE_PATH" TMUX='' CLAUDECODE=1 \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w/home" HOME="$w/home/user-home" CLAUDE_CONFIG_DIR='' \
+    FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_PANE_PATH="$sm" \
+    FM_AGY_READY_POLLS=2 FM_AGY_POLL_INTERVAL=0 \
+    "$ROOT/bin/fm-spawn.sh" sm "$sm" --secondmate >/dev/null 2>&1 || rc=$?
+
+  [ "$rc" -eq 0 ] || fail "an agy secondmate spawn should succeed"
+  meta="$w/home/state/sm.meta"
+  [ "$(meta_field "$meta" harness)" = agy ] || fail "an agy secondmate must record its own harness"
+  [ "$(meta_field "$meta" kind)" = secondmate ] || fail "an agy secondmate must record kind=secondmate"
+  launch=$(cat "$launchlog")
+  assert_contains "$launch" "--prompt-interactive" \
+    "an agy secondmate must launch with --prompt-interactive"
+  assert_contains "$launch" "--dangerously-skip-permissions" \
+    "an agy secondmate must launch with --dangerously-skip-permissions"
+  pass "agy is accepted for secondmates and launches with the contract its primary needs"
+}
+
 # ===========================================================================
 # C integration: config/secondmate-harness's optional model/effort tokens thread
 # into the secondmate launch command and meta, durably and without a new file.
@@ -658,6 +704,14 @@ case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
 case "${1:-}" in
+  capture-pane)
+    if [ -n "${FM_FAKE_PANE_CAPTURE:-}" ]; then
+      printf '%s\n' "$FM_FAKE_PANE_CAPTURE"
+    else
+      printf 'working\nesc to cancel\n'
+    fi
+    exit 0
+    ;;
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
@@ -2640,6 +2694,7 @@ test_spawn_bare_backward_compat
 test_spawn_explicit_harness_wins
 test_spawn_unverified_secondmate_harness_refused
 test_spawn_cursor_secondmate_launches_with_its_primary_contract
+test_spawn_agy_secondmate_launches_with_its_primary_contract
 test_spawn_backend_precedence_over_inherited_config
 test_spawn_explicit_backend_precedence_over_env_and_inherited_config
 test_spawn_bare_harness_no_model_effort_flag

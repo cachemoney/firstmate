@@ -122,7 +122,11 @@ test_agy_claims_no_inherited_launcher_marker() {
   local fakebin out
   # AGENT=1 was observed on a live agy TUI as inherited launcher state, so it
   # must never promote to an agy identity the way GEMINI_CLI does for gemini.
-  out=$(AGENT=1 "$HARNESS")
+  # Ancestry walk must be blinded so the test runner's ambient process tree
+  # does not decide the identity.
+  fakebin=$(fm_fakebin "$TMP_ROOT/anc-blind")
+  fm_fake_blind_ancestry "$fakebin"
+  out=$(PATH="$fakebin:$PATH" AGENT=1 "$HARNESS")
   [ "$out" != agy ] \
     || fail "an inherited AGENT=1 must never claim the agy identity, got '$out'"
   # Drive the hazard the other way: agy does not clear an inherited CLAUDECODE,
@@ -150,8 +154,7 @@ test_agy_control_mechanics_are_the_verified_ones() {
   [ "$(fm_control_harness_family agy)" = agy ] || fail "agy must map to its own family"
   fm_control_harness_supports_kind agy scout || fail "agy must run scouts"
   fm_control_harness_supports_kind agy ship || fail "agy must run ships"
-  fm_control_harness_supports_kind agy secondmate \
-    && fail "agy must refuse secondmates" || true
+  fm_control_harness_supports_kind agy secondmate || fail "agy must support secondmates"
   [ "$(fm_control_interrupt_key agy)" = Escape ] || fail "agy must interrupt on Escape"
   [ "$(fm_control_interrupt_repeat agy)" = 1 ] || fail "agy must interrupt on a single press"
   [ -z "$(fm_control_interrupt_clear_key agy)" ] || fail "agy must need no clear key"
@@ -434,6 +437,37 @@ test_agy_trust_refuses_out_of_scope_paths() {
   pass "fm-agy-trust.sh: refuses every out-of-scope path and never rewrites a broken store"
 }
 
+test_agy_trust_secondmate_home_mode() {
+  local rec store sm_home out rc
+  rec=$(make_agy_trust_case smtrust)
+  read_agy_trust_case "$rec"
+  store="$HOME_DIR/.gemini/antigravity-cli/settings.json"
+  mkdir -p "$(dirname "$store")"
+  printf '%s\n' '{"trustedWorkspaces":[]}' > "$store"
+
+  sm_home="$CASE_DIR/sm-home"
+  mkdir -p "$sm_home/bin" "$sm_home/data"
+  printf '# Firstmate\n' > "$sm_home/AGENTS.md"
+  printf 'sm-id-1\n' > "$sm_home/.fm-secondmate-home"
+
+  # Valid secondmate home is trusted
+  out=$(HOME="$HOME_DIR" "$TRUST" --secondmate-home "$sm_home" "sm-id-1" 2>&1)
+  expect_code 0 $? "valid secondmate home must be trusted: $out"
+  assert_agy_trusted "$store" "$sm_home" "secondmate home was not trusted"
+
+  # Wrong secondmate id is refused
+  rc=0; out=$(HOME="$HOME_DIR" "$TRUST" --secondmate-home "$sm_home" "wrong-id" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "mismatched secondmate id must be refused"
+  assert_contains "$out" "marked for secondmate 'sm-id-1', not 'wrong-id'" "refusal lacked expected reason"
+
+  # Plain dir (no marker) is refused
+  rc=0; out=$(HOME="$HOME_DIR" "$TRUST" --secondmate-home "$CASE_DIR" "sm-id-1" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "unmarked dir must be refused in secondmate-home mode"
+  assert_contains "$out" "no .fm-secondmate-home marker" "refusal lacked expected reason"
+
+  pass "fm-agy-trust.sh: registers valid secondmate home and refuses mismatched markers"
+}
+
 # The fake tmux renders an agy-shaped screen that advances through
 # launched -> (trust dialog ->) busy as the real spawn drives it, so the launch
 # command, the pre-registration, the single Enter that answers a dialog, and
@@ -545,6 +579,7 @@ exit 9
 SH
   chmod +x "$fakebin/agy"
   fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  ln -sf "$(command -v node)" "$fakebin/node"
   printf '%s\n' "$fakebin"
 }
 
@@ -583,12 +618,10 @@ EOF
 }
 
 # The spawn drives the real bin/fm-agy-trust.sh and the fake tmux's trust
-# lookup under this base PATH, and both read agy's settings store with node,
-# which runners do not keep in the system bin dirs. Carry the directory the
-# invoking environment resolves node from, the fm-kimi-harness shape.
-NODE_BIN=$(command -v node) || fail "test needs node"
-NODE_BIN_DIR=$(dirname "$NODE_BIN")
-BASE_PATH=${FM_TEST_BASE_PATH:-$NODE_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin}
+# lookup under this base PATH. fakebin links node directly so host environments
+# where node and agy share a directory (e.g. linuxbrew) do not leak agy into
+# tests that deliberately isolate or remove it.
+BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 
 run_agy_spawn() {
   local case_dir=$1 home=$2 proj=$3 wt=$4 fakebin=$5 id=$6
@@ -849,21 +882,43 @@ test_agy_missing_binary_refuses_before_pane_creation() {
   pass "fm-spawn: a missing agy executable refuses before pane creation"
 }
 
-test_agy_secondmate_is_refused() {
-  local id rec out rc
+test_agy_secondmate_launches_and_trusts_home() {
+  local id rec out rc store sm_home launch meta
   id="agy-secondmate-z6-$$"
-  rec=$(make_agy_spawn_case secondmate-refuse "$id")
+  rec=$(make_agy_spawn_case secondmate-launch "$id")
   read_agy_spawn_record "$rec"
-  rc=0
+  sm_home="$CASE_DIR/sm-home"
+  mkdir -p "$sm_home/bin" "$sm_home/data" "$sm_home/state" "$sm_home/config"
+  printf '# Firstmate\n' > "$sm_home/AGENTS.md"
+  printf '%s\n' "$id" > "$sm_home/.fm-secondmate-home"
+  printf 'charter-agy-sm\n' > "$sm_home/data/charter.md"
+
+  store="$HOME_DIR/.gemini/antigravity-cli/settings.json"
+  mkdir -p "$(dirname "$store")"
+  printf '%s\n' '{"trustedWorkspaces":[]}' > "$store"
+
   out=$(HOME="$HOME_DIR" FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
-    FM_SPAWN_NO_GUARD=1 PATH="$FAKEBIN_DIR:$BASE_PATH" \
-    "$SPAWN" "$id" --secondmate agy 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "an agy secondmate spawn should be refused"
-  assert_contains "$out" "agy is a verified crewmate/scout adapter only" \
-    "agy secondmate refusal lacked its concrete reason"
-  pass "fm-spawn: agy cannot be launched as a secondmate"
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$sm_home" TMUX="fake,1,0" \
+    FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    FM_FAKE_TMUX_CALL_LOG="$CASE_DIR/tmux-calls.log" \
+    FM_FAKE_AGY_STATE="$CASE_DIR/agy.state" \
+    FM_FAKE_AGY_SETTINGS="$store" \
+    FM_AGY_READY_POLLS=4 FM_AGY_POLL_INTERVAL=0 \
+    PATH="$FAKEBIN_DIR:$BASE_PATH" \
+    "$SPAWN" "$id" "$sm_home" --harness agy --secondmate 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "agy secondmate spawn should succeed: $out"
+  assert_agy_trusted "$store" "$sm_home" "secondmate home was not pre-registered in agy trustedWorkspaces"
+  launch=$(cat "$CASE_DIR/launch.log")
+  assert_contains "$launch" "$FAKEBIN_DIR/agy" "agy launch did not pin the resolved binary"
+  assert_contains "$launch" "--prompt-interactive" "agy secondmate did not carry charter via --prompt-interactive"
+  assert_contains "$launch" "--dangerously-skip-permissions" "agy secondmate omitted --dangerously-skip-permissions"
+  meta="$HOME_DIR/state/$id.meta"
+  assert_grep 'harness=agy' "$meta" "meta did not record harness=agy"
+  assert_grep 'kind=secondmate' "$meta" "meta did not record kind=secondmate"
+  pass "fm-spawn: agy launches as a secondmate and pre-registers home trust"
 }
 
 test_agy_spawn_arms_no_busy_wiring() {
@@ -906,11 +961,12 @@ test_agy_zero_model_timeout_is_clamped_to_the_default_bound
 test_agy_trust_registers_the_logical_and_resolved_worktree_paths
 test_agy_trust_creates_a_missing_store
 test_agy_trust_refuses_out_of_scope_paths
+test_agy_trust_secondmate_home_mode
 test_agy_fresh_worktree_is_pre_trusted_and_launches_without_a_dialog
 test_agy_dialog_despite_registration_is_answered_once
 test_agy_unregistered_path_ignores_busy_until_the_dialog_is_answered
 test_agy_unregistered_path_without_a_dialog_fails_the_spawn
 test_agy_pre_trusted_path_that_never_turns_busy_fails_the_spawn
 test_agy_missing_binary_refuses_before_pane_creation
-test_agy_secondmate_is_refused
+test_agy_secondmate_launches_and_trusts_home
 test_agy_spawn_arms_no_busy_wiring
