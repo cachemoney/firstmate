@@ -2199,6 +2199,39 @@ test_hook_no_afk_ignores_poll_derived_grace() {
   pass "fm-turnend-guard: with away mode off, the poll-derived grace never applies"
 }
 
+test_hook_blocks_with_agy_checkpoint_repair_reason() {
+  local dir fakebin out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-agy-repair")
+  fakebin=$(fm_fakebin "$dir/fakebin")
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  750:comm=) printf '%s\n' agy ;;
+  750:args=) printf '%s\n' 'agy' ;;
+  750:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-turnend-guard.sh' ;;
+  *:ppid=) printf '%s\n' 750 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  : > "$dir/state/task1.meta"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(printf '{"stop_hook_active":false}' | env -u CLAUDECODE PATH="$fakebin:$PATH" FM_HOME="$dir" bash "$dir/bin/fm-turnend-guard.sh" 2>&1); status=$?
+  expect_code 2 "$status" "hook must block under agy when supervision is unhealthy"
+  assert_contains "$out" "repair missing watcher supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds 180." "block reason must contain agy checkpoint repair line"
+  pass "fm-turnend-guard: blocks with agy foreground checkpoint repair line"
+}
+
 test_predicate_healthy_no_inflight
 test_predicate_unhealthy_no_beacon
 test_predicate_unhealthy_stale_beacon
@@ -2288,3 +2321,4 @@ test_hook_away_daemon_allows_beacon_within_poll_derived_grace
 test_hook_away_daemon_blocks_dead_daemon_despite_poll_derived_grace
 test_hook_away_daemon_blocks_beacon_older_than_poll_derived_grace
 test_hook_no_afk_ignores_poll_derived_grace
+test_hook_blocks_with_agy_checkpoint_repair_reason
