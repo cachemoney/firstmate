@@ -1,8 +1,7 @@
 # Antigravity CLI
 
-Antigravity's `agy` TUI, verified end to end on 2026-09-10 with agy 1.2.0 on Linux through the Herdr backend.
-Verified as a CREWMATE and SCOUT adapter only; `../../../../../bin/fm-spawn.sh` refuses a secondmate launch on it because `../../../../../docs/supervision-protocols/` carries no agy wake protocol.
-`../../../../../docs/verification/agy.md` owns how every fact below was established and what is still unproven.
+Antigravity's `agy` TUI, verified end to end on 2026-09-10 with agy 1.2.0 on Linux through the Herdr backend, and verified as a PRIMARY and SECONDMATE harness on 2026-09-17 with bounded foreground checkpoint supervision and turn-end guard backstops.
+`../../../../../docs/verification/agy.md` owns crewmate/scout verification facts, and `../../../../../docs/verification/agy-primary.md` owns primary and secondmate supervision and lock contracts.
 
 ## Operating facts
 
@@ -40,7 +39,7 @@ The unauthenticated failure mode was not observed, so treat any auth prompt or r
 
 Detected by ancestry alone: `../../../../../bin/fm-harness.sh` matches the anchored process name `agy`, never `*agy*`.
 No environment marker is promoted: `AGENT=1` observed on a live TUI is an inherited launcher value, not an agy identity, and agy does not clear an inherited `CLAUDECODE` - but a structural agy ancestor now outranks that retained marker, which `../../../../../bin/fm-harness.sh` decides without depending on the spawn's own launch-boundary marker clearing.
-agy is deliberately absent from the session-lock name vocabulary in `../../../../../bin/fm-session-lock-lib.sh`, where muse, gemini, and rovo are also absent: a crewmate-only adapter must never own a home session lock.
+agy is an authorized session-lock owner in `../../../../../bin/fm-session-lock-lib.sh` (matching anchored `^agy$` in `FM_HARNESS_RE` and listed in `FM_HARNESS_NAMES`).
 
 ## Worker busy state and turn end
 
@@ -48,8 +47,9 @@ agy is deliberately absent from the session-lock name vocabulary in `../../../..
 `fm_busy_agy_tail_busy` matches the pinned `esc to cancel` status row alone, hardcoded with no environment override, and `fm_busy_classify` reports `unknown agy-regex` rather than idle when it is absent, because a long turn can scroll the marker out of the captured tail.
 Teardown removes nothing agy-specific because the spawn leaves nothing behind.
 
-## Primary integration
+## Primary and secondmate integration
 
-Unsupported and unverified.
-`../../../../../docs/supervision-protocols/` carries no agy protocol, no turn-end guard adapter exists for it, and this adapter verified only the crewmate-side launch, busy state, interrupt, and exit.
-`references/common/primary-hooks.md`'s unsupported-boundary rule applies: never invent a wake protocol from a similar TUI.
+Verified as a primary session supervisor and secondmate harness.
+`../../../../../docs/supervision-protocols/agy.md` defines the bounded foreground checkpoint protocol (`bin/fm-watch-checkpoint.sh --seconds "${FM_AGY_WATCH_CHECKPOINT:-180}"`), drain-first handling via `bin/fm-wake-drain.sh`, and wake acknowledgement (`--ack-through`).
+The turn-end guard backstop in `../../../../../bin/fm-turnend-guard.sh` blocks unmonitored completion when tasks are in flight, emitting the exact foreground checkpoint repair directive (`repair missing watcher supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds 180.`).
+Secondmates launch with `--prompt-interactive "<charter>"`, `--dangerously-skip-permissions`, pre-registered home workspace trust via `../../../../../bin/fm-agy-trust.sh --secondmate-home`, and thread model/effort tokens from `config/secondmate-harness`.
